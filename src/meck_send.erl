@@ -130,7 +130,8 @@ handle_info({Destination,Msg}, State = #state{listeners=Listeners}) ->
   case dict:find(Destination, Listeners) of
     {ok, Pid} -> 
       Pid ! Msg;
-    error -> ok
+    error ->
+      Destination ! Msg
   end,
   {noreply, State};
 handle_info({'EXIT',_Pid,_Reason}, State) ->
