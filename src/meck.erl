@@ -205,7 +205,7 @@ history(Mod) when is_atom(Mod) -> call(Mod, history).
 %% The function returns the list of mocked modules that were unloaded
 %% in the process.
 -spec unload() -> [atom()].
-unload() -> lists:foldl(fun unload_if_mocked/2, [], registered()).
+unload() -> lists:foldl(fun(P,L) -> meck_module:unload_if_mocked(P,L,"_meck",fun unload/1) end, [], registered()).
 
 %% @spec unload(Mod:: atom() | list(atom())) -> ok
 %% @doc Unload a mocked module or a list of mocked modules.
@@ -224,10 +224,10 @@ unload(Mods) when is_list(Mods) -> [unload(Mod) || Mod <- Mods], ok.
 
 %% @hidden
 init([Mod, Options]) ->
-    Original = backup_original(Mod),
+    Original = meck_module:backup_original(Mod),
     process_flag(trap_exit, true),
     Expects = init_expects(Mod, Options),
-    compile_forms(to_forms(Mod, Expects)),
+    meck_module:compile_forms(to_forms(Mod, Expects)),
     {ok, #state{mod = Mod, expects = Expects, original = Original}}.
 
 %% @hidden
@@ -263,8 +263,8 @@ handle_info(_Info, S) -> {noreply, S}.
 
 %% @hidden
 terminate(_Reason, #state{mod = Mod, original = OriginalState}) ->
-    cleanup(Mod),
-    restore_original(Mod, OriginalState),
+    meck_module:cleanup(Mod),
+    meck_module:restore_original(Mod, OriginalState),
     ok.
 
 %% @hidden
@@ -308,31 +308,16 @@ call(Mod, Msg) ->
 
 proc_name(Name) -> list_to_atom(atom_to_list(Name) ++ "_meck").
 
-original_name(Name) -> list_to_atom(atom_to_list(Name) ++ "_meck_original").
-
 wait_for_exit(Mod) ->
     MonitorRef = erlang:monitor(process, proc_name(Mod)),
     receive {'DOWN', MonitorRef, _Type, _Object, _Info} -> ok end.
 
-unload_if_mocked(P, L) when is_atom(P) ->
-    unload_if_mocked(atom_to_list(P), L);
-unload_if_mocked(P, L) when length(P) > 5 ->
-    case lists:split(length(P) - 5, P) of
-        {Name, "_meck"} ->
-            Mocked = list_to_existing_atom(Name),
-            unload(Mocked),
-            [Mocked|L];
-        _Else ->
-            L
-    end;
-unload_if_mocked(_P, L) ->
-    L.
 
 %% --- Mock handling -----------------------------------------------------------
 
 init_expects(Mod, Options) ->
-    case proplists:get_value(passthrough, Options, false) andalso exists(Mod) of
-        true -> dict:from_list([{FA, passthrough} || FA <- exports(Mod)]);
+    case proplists:get_value(passthrough, Options, false) andalso meck_module:exists(Mod) of
+        true -> dict:from_list([{FA, passthrough} || FA <- meck_module:exports(Mod)]);
         _    -> dict:new()
     end.
 
@@ -351,7 +336,7 @@ change_expects(Op, Mod, Func, Value, Expects) ->
     % only recompile if function was added or arity was changed
     case interface_equal(NewExpects, Expects) of
         true  -> ok;
-        false -> compile_forms(to_forms(Mod, NewExpects))
+        false -> meck_module:compile_forms(to_forms(Mod, NewExpects))
     end,
     NewExpects.
 
@@ -422,7 +407,7 @@ handle_mock_exception(Mod, Func, Fun, Args) ->
             raise(Mod, Func, Args, Class, Reason);
         {passthrough, Args} ->
             % call_original(Args) called from mock function
-            Result = apply(original_name(Mod), Func, Args),
+            Result = apply(meck_module:original_name(Mod), Func, Args),
             call(Mod, {add_history, {{Mod, Func, Args}, Result}}),
             Result
     end.
@@ -445,7 +430,7 @@ call_expect(_Mod, _Func, {anon, Arity, Return}, VarList)
   when Arity == length(VarList) ->
     Return;
 call_expect(Mod, Func, passthrough, VarList) ->
-    apply(original_name(Mod), Func, VarList);
+    apply(meck_module:original_name(Mod), Func, VarList);
 call_expect(_Mod, _Func, Fun, VarList) when is_function(Fun) ->
     apply(Fun, VarList).
 
@@ -458,103 +443,3 @@ inject(Mod, Func, Args, [H|Stack]) ->
 
 is_mock_exception(Fun) -> is_local_function(Fun).
 
-%% --- Original module handling ------------------------------------------------
-
-backup_original(Module) ->
-    Cover = get_cover_state(Module),
-    try
-        Forms = abstract_code(beam_file(Module)),
-        NewName = original_name(Module),
-        compile_forms(rename_module(Forms, NewName), compile_options(Module))
-    catch
-        throw:{object_code_not_found, _Module} -> ok; % TODO: What to do here?
-        throw:no_abstract_code                 -> ok  % TODO: What to do here?
-    end,
-    Cover.
-
-restore_original(_Mod, false) ->
-    ok;
-restore_original(Mod, {File, Data, Options}) ->
-    case filename:extension(File) of
-        ".erl" ->
-            {ok, Mod} = cover:compile_module(File, Options);
-        ".beam" ->
-            cover:compile_beam(File)
-    end,
-    ok = cover:import(Data),
-    file:delete(Data),
-    ok.
-
-get_cover_state(Module) -> get_cover_state(Module, cover:is_compiled(Module)).
-
-get_cover_state(Module, {file, File}) ->
-    Data = atom_to_list(Module) ++ ".coverdata",
-    ok = cover:export(Data, Module),
-    CompileOptions =
-        try
-            compile_options(beam_file(Module))
-        catch
-            throw:{object_code_not_found, _Module} -> []
-        end,
-    {File, Data, CompileOptions};
-get_cover_state(_Module, _IsCompiled) ->
-    false.
-
-exists(Module) ->
-    code:which(Module) /= non_existing.
-
-exports(Module) ->
-    [ FA ||  FA  <- Module:module_info(exports),
-             FA /= {module_info, 0}, FA /= {module_info, 1}].
-
-compile_forms(AbsCode) -> compile_forms(AbsCode, []).
-
-compile_forms(AbsCode, Opts) ->
-    case compile:forms(AbsCode, Opts) of
-        {ok, ModName, Binary} ->
-            load_binary(ModName, Binary);
-        {ok, ModName, Binary, _Warnings} ->
-            load_binary(ModName, Binary)
-    end.
-
-load_binary(Name, Binary) ->
-    case code:load_binary(Name, "", Binary) of
-        {module, Name}  -> ok;
-        {error, Reason} -> exit({error_loading_module, Name, Reason})
-    end.
-
-beam_file(Module) ->
-    % code:which/1 cannot be used for cover_compiled modules
-    case code:get_object_code(Module) of
-        {_, Binary, _Filename} -> Binary;
-        error                  -> throw({object_code_not_found, Module})
-    end.
-
-abstract_code(BeamFile) ->
-    case beam_lib:chunks(BeamFile, [abstract_code]) of
-        {ok, {_, [{abstract_code, {raw_abstract_v1, Forms}}]}} ->
-            Forms;
-        {ok, {_, [{abstract_code, no_abstract_code}]}} ->
-            throw(no_abstract_code)
-    end.
-
-compile_options(BeamFile) when is_binary(BeamFile) ->
-    case beam_lib:chunks(BeamFile, [compile_info]) of
-        {ok, {_, [{compile_info, Info}]}} ->
-            proplists:get_value(options, Info);
-        _ ->
-            []
-    end;
-compile_options(Module) ->
-    proplists:get_value(options, Module:module_info(compile)).
-
-rename_module([{attribute, Line, module, _OldName}|T], NewName) ->
-    [{attribute, Line, module, NewName}|T];
-rename_module([H|T], NewName) ->
-    [H|rename_module(T, NewName)].
-
-cleanup(Mod) ->
-    code:purge(Mod),
-    code:delete(Mod),
-    code:purge(original_name(Mod)),
-    code:delete(original_name(Mod)).
