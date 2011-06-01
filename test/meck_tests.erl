@@ -55,7 +55,21 @@ meck_test_() ->
                            fun shortcut_expect_negative_arity_/1,
                            fun shortcut_call_return_value_/1,
                            fun shortcut_call_argument_/1,
-                           fun delete_/1]]}.
+                           fun delete_/1,
+                           fun called_false_no_args_/1,
+                           fun called_true_no_args_/1,
+                           fun called_true_two_functions_/1,
+                           fun called_false_one_arg_/1,
+                           fun called_true_one_arg_/1,
+                           fun called_false_few_args_/1,
+                           fun called_true_few_args_/1,
+                           fun called_false_error_/1,
+                           fun called_true_error_/1,
+                           fun sequence_/1,
+                           fun sequence_multi_/1,
+                           fun loop_/1,
+                           fun loop_multi_/1
+                          ]]}.
 
 setup() ->
     % Uncomment to run tests with dbg:
@@ -283,6 +297,124 @@ delete_(Mod) ->
     ?assertError(undef, Mod:test(a, b)),
     ?assert(meck:validate(Mod)).
 
+called_false_no_args_(Mod) ->
+    Args = [],
+    ok = meck:expect(Mod, test, length(Args), ok),
+    ?assertEqual(false, meck:called(Mod, test, Args)),
+    ?assert(meck:validate(Mod)).
+
+called_true_no_args_(Mod) ->
+    Args = [],
+    ok = meck:expect(Mod, test, length(Args), ok),
+    ok = Mod:test(),
+    ?assertEqual(true, meck:called(Mod, test, Args)),
+    ?assert(meck:validate(Mod)).
+
+called_true_two_functions_(Mod) ->
+    Args = [],
+    ok = meck:expect(Mod, test1, length(Args), ok),
+    ok = meck:expect(Mod, test2, length(Args), ok),
+    ok = Mod:test1(),
+    ok = Mod:test2(),
+    ?assertEqual(true, meck:called(Mod, test2, Args)),
+    ?assert(meck:validate(Mod)).
+
+called_false_one_arg_(Mod) ->
+    Arg = "hello",
+    Args = [Arg],
+    ok = meck:expect(Mod, test, length(Args), ok),
+    ?assertEqual(false, meck:called(Mod, test, [Arg])),
+    ?assert(meck:validate(Mod)).
+
+called_true_one_arg_(Mod) ->
+    Arg = "hello",
+    Args = [Arg],
+    ok = meck:expect(Mod, test, length(Args), ok),
+    ok = Mod:test(Arg),
+    ?assertEqual(true, meck:called(Mod, test, [Arg])),
+    ?assert(meck:validate(Mod)).
+
+called_false_few_args_(Mod) ->
+    Arg1 = one,
+    Arg2 = 2,
+    Arg3 = {three, 3},
+    Arg4 = "four",
+    Args = [Arg1, Arg2, Arg3, Arg4],
+    ok = meck:expect(Mod, test, length(Args), ok),
+    ?assertEqual(false, meck:called(Mod, test, Args)),
+    ?assert(meck:validate(Mod)).
+
+called_true_few_args_(Mod) ->
+    Arg1 = one,
+    Arg2 = 2,
+    Arg3 = {three, 3},
+    Arg4 = "four",
+    Args = [Arg1, Arg2, Arg3, Arg4],
+    ok = meck:expect(Mod, test, length(Args), ok),
+    ok = Mod:test(Arg1, Arg2, Arg3, Arg4),
+    ?assertEqual(true, meck:called(Mod, test, Args)),
+    ?assert(meck:validate(Mod)).
+
+called_false_error_(Mod) ->
+    Arg1 = one,
+    Arg2 = "two",
+    Arg3 = {3, 3},
+    Args = [Arg1, Arg2, Arg3],
+    TestFun = fun (_, _, _) -> meck:exception(error, my_error) end,
+    ok = meck:expect(Mod, test, TestFun),
+    ?assertEqual(false, meck:called(Mod, test, Args)),
+    ?assert(meck:validate(Mod)).
+
+called_true_error_(Mod) ->
+    Arg1 = one,
+    Arg2 = "two",
+    Arg3 = {3, 3},
+    Args = [Arg1, Arg2, Arg3],
+    TestFun = fun (_, _, _) -> meck:exception(error, my_error) end,
+    ok = meck:expect(Mod, test, TestFun),
+    catch Mod:test(Arg1, Arg2, Arg3),
+    ?assertEqual(true, meck:called(Mod, test, Args)),
+    ?assert(meck:validate(Mod)).
+
+sequence_(Mod) ->
+    Sequence = [a, b, c, d, e],
+    ?assertEqual(ok, meck:sequence(Mod, s, 2, Sequence)),
+    ?assertEqual(Sequence,
+                 [Mod:s(a, b) || _ <- lists:seq(1, length(Sequence))]),
+    ?assertEqual([e, e, e, e, e],
+                 [Mod:s(a, b) || _ <- lists:seq(1, 5)]),
+    ?assert(meck:validate(Mod)).
+
+sequence_multi_(Mod) ->
+    meck:new(mymod2),
+    Mods = [Mod, mymod2],
+    Sequence = [a, b, c, d, e],
+    ?assertEqual(ok, meck:sequence(Mods, s, 2, Sequence)),
+    ?assertEqual(Sequence,
+                 [Mod:s(a, b) || _ <- lists:seq(1, length(Sequence))]),
+    ?assertEqual([e, e, e, e, e],
+                 [Mod:s(a, b) || _ <- lists:seq(1, 5)]),
+    ?assertEqual(Sequence,
+                 [mymod2:s(a, b) || _ <- lists:seq(1, length(Sequence))]),
+    ?assertEqual([e, e, e, e, e],
+                 [mymod2:s(a, b) || _ <- lists:seq(1, 5)]),
+    ?assert(meck:validate(Mods)).
+
+loop_(Mod) ->
+    Loop = [a, b, c, d, e],
+    ?assertEqual(ok, meck:loop(Mod, l, 2, Loop)),
+    [?assertEqual(V, Mod:l(a, b)) || _ <- lists:seq(1, length(Loop)), V <- Loop],
+    ?assert(meck:validate(Mod)).
+
+loop_multi_(Mod) ->
+    meck:new(mymod2),
+    Mods = [Mod, mymod2],
+    Loop = [a, b, c, d, e],
+    ?assertEqual(ok, meck:loop(Mods, l, 2, Loop)),
+    [[?assertEqual(V, M:l(a, b)) || _ <- lists:seq(1, length(Loop)), V <- Loop]
+     || M <- Mods],
+    ?assert(meck:validate(Mods)).
+
 %% --- Tests with own setup ----------------------------------------------------
 
 call_original_test() ->
@@ -506,7 +638,7 @@ remote_meck_test_() ->
 
 remote_setup() ->
     [] = os:cmd("epmd -daemon"),
-    {ok, Hostname} = inet:gethostname(),
+    Hostname = "localhost",
     Myself = list_to_atom("meck_eunit_test@" ++ Hostname),
     net_kernel:start([Myself, shortnames]),
     {ok, Node} = slave:start_link(list_to_atom(Hostname), meck_remote_test,
@@ -529,4 +661,3 @@ remote_meck_cover_({Node, Mod}) ->
     {ok, Mod} = cover:compile(Mod),
     {ok, _Nodes} = cover:start([Node]),
     ?assertEqual(ok, rpc:call(Node, meck, new, [Mod])).
-

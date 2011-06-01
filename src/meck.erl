@@ -1,5 +1,5 @@
 %%==============================================================================
-%% Copyright 2010 Erlang Solutions Ltd.
+%% Copyright 2011 Adam Lindberg & Erlang Solutions Ltd.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -26,6 +26,8 @@
 -export([new/2]).
 -export([expect/3]).
 -export([expect/4]).
+-export([sequence/4]).
+-export([loop/4]).
 -export([delete/3]).
 -export([exception/2]).
 -export([passthrough/1]).
@@ -33,6 +35,7 @@
 -export([validate/1]).
 -export([unload/0]).
 -export([unload/1]).
+-export([called/3]).
 
 %% Callback exports
 -export([init/1]).
@@ -73,7 +76,7 @@
 %% @equiv new(Mod, [])
 -spec new(Mod:: atom() | [atom()]) -> ok.
 new(Mod) when is_atom(Mod) -> new(Mod, []);
-new(Mod) when is_list(Mod) -> [new(M) || M <- Mod], ok.
+new(Mod) when is_list(Mod) -> lists:foreach(fun new/1, Mod), ok.
 
 %% @spec new(Mod:: atom() | list(atom()), Options::list(term())) -> ok
 %% @doc Creates new mocked module(s).
@@ -99,7 +102,7 @@ new(Mod, Options) when is_atom(Mod), is_list(Options) ->
         {error, Reason} -> erlang:error(Reason)
     end;
 new(Mod, Options) when is_list(Mod) ->
-    [new(M, Options) || M <- Mod],
+    lists:foreach(fun(M) -> new(M, Options) end, Mod),
     ok.
 
 %% @spec expect(Mod:: atom() | list(atom()), Func::atom(), Expect::fun()) -> ok
@@ -117,7 +120,7 @@ expect(Mod, Func, Expect)
   when is_atom(Mod), is_atom(Func), is_function(Expect) ->
     call(Mod, {expect, Func, Expect});
 expect(Mod, Func, Expect) when is_list(Mod) ->
-    [expect(M, Func, Expect) || M <- Mod],
+    lists:foreach(fun(M) -> expect(M, Func, Expect) end, Mod),
     ok.
 
 %% @spec expect(Mod:: atom() | list(atom()), Func::atom(),
@@ -134,7 +137,44 @@ expect(Mod, Func, Arity, Result)
   when is_atom(Mod), is_atom(Func), is_integer(Arity), Arity >= 0 ->
     call(Mod, {expect, Func, Arity, Result});
 expect(Mod, Func, Arity, Result) when is_list(Mod) ->
-    [expect(M, Func, Arity, Result) || M <- Mod],
+    lists:foreach(fun(M) -> expect(M, Func, Arity, Result) end, Mod),
+    ok.
+
+%% @spec sequence(Mod:: atom() | list(atom()), Func::atom(),
+%%                Arity::pos_integer(), Sequence::[term()]) -> ok
+%% @doc Adds an expectation which returns a value from `Sequence'
+%% until exhausted.
+%%
+%% This creates an expectation which takes `Arity' number of arguments
+%% and returns one element from `Sequence' at a time. Thus, calls to
+%% this expect will exhaust the list of return values in order until
+%% the last value is reached. That value is then returned for all
+%% subsequent calls.
+-spec sequence(Mod:: atom() | [atom()], Func::atom(),
+               Arity::pos_integer(), Sequence::[term()]) -> ok.
+sequence(Mod, Func, Arity, Sequence)
+  when is_atom(Mod), is_atom(Func), is_integer(Arity), Arity >= 0 ->
+    call(Mod, {sequence, Func, Arity, Sequence});
+sequence(Mod, Func, Arity, Sequence) when is_list(Mod) ->
+    lists:foreach(fun(M) -> sequence(M, Func, Arity, Sequence) end, Mod),
+    ok.
+
+%% @spec loop(Mod:: atom() | list(atom()), Func::atom(),
+%%            Arity::pos_integer(), Loop::[term()]) -> ok
+%% @doc Adds an expectation which returns a value from `Loop'
+%% infinitely.
+%%
+%% This creates an expectation which takes `Arity' number of arguments
+%% and returns one element from `Loop' at a time. Thus, calls to this
+%% expect will return one element at a time from the list and will
+%% restart at the first element when the end is reached.
+-spec loop(Mod:: atom() | [atom()], Func::atom(),
+           Arity::pos_integer(), Loop::[term()]) -> ok.
+loop(Mod, Func, Arity, Loop)
+  when is_atom(Mod), is_atom(Func), is_integer(Arity), Arity >= 0 ->
+    call(Mod, {loop, Func, Arity, Loop});
+loop(Mod, Func, Arity, Loop) when is_list(Mod) ->
+    lists:foreach(fun(M) -> loop(M, Func, Arity, Loop) end, Mod),
     ok.
 
 %% @spec delete(Mod:: atom() | list(atom()), Func::atom(),
@@ -149,7 +189,7 @@ delete(Mod, Func, Arity)
   when is_atom(Mod), is_atom(Func), Arity >= 0 ->
     call(Mod, {delete, Func, Arity});
 delete(Mod, Func, Arity) when is_list(Mod) ->
-    [delete(M, Func, Arity) || M <- Mod],
+    lists:foreach(fun(M) -> delete(M, Func, Arity) end, Mod),
     ok.
 
 %% @spec exception(Class:: throw | error | exit, Reason::term()) -> no_return()
@@ -216,7 +256,17 @@ unload() -> lists:foldl(fun(P,L) -> meck_module:unload_if_mocked(P,L,"_meck",fun
 %% manually or when called.
 -spec unload(Mods:: atom() | [atom()]) -> ok.
 unload(Mod) when is_atom(Mod) -> call(Mod, stop), wait_for_exit(Mod);
-unload(Mods) when is_list(Mods) -> [unload(Mod) || Mod <- Mods], ok.
+unload(Mods) when is_list(Mods) -> lists:foreach(fun unload/1, Mods), ok.
+
+%% @spec called(Mod:: atom(), Fun:: atom(), Args:: list(term())) -> boolean()
+%% @doc Returns whether `Mod:Func' has been called with `Args'.
+%%
+%% This will check the history for the module, `Mod', to determine
+%% whether the function, `Fun', was called with arguments, `Args'. If
+%% so, this function returns true, otherwise false.
+-spec called(Mod::atom(), Fun::atom(), Args::list()) -> boolean().
+called(Mod, Fun, Args) ->
+    has_call({Mod, Fun, Args}, meck:history(Mod)).
 
 %%==============================================================================
 %% Callback functions
@@ -232,13 +282,21 @@ init([Mod, Options]) ->
 
 %% @hidden
 handle_call({get_expect, Func, Arity}, _From, S) ->
-    Expect = get_expect(S#state.expects, Func, Arity),
-    {reply, Expect, S};
+    {Expect, NewExpects} = get_expect(S#state.expects, Func, Arity),
+    {reply, Expect, S#state{expects = NewExpects}};
 handle_call({expect, Func, Expect}, _From, S) ->
     NewExpects = store_expect(S#state.mod, Func, Expect, S#state.expects),
     {reply, ok, S#state{expects = NewExpects}};
 handle_call({expect, Func, Arity, Result}, _From, S) ->
     NewExpects = store_expect(S#state.mod, Func, {anon, Arity, Result},
+                              S#state.expects),
+    {reply, ok, S#state{expects = NewExpects}};
+handle_call({sequence, Func, Arity, Sequence}, _From, S) ->
+    NewExpects = store_expect(S#state.mod, Func, {sequence, Arity, Sequence},
+                              S#state.expects),
+    {reply, ok, S#state{expects = NewExpects}};
+handle_call({loop, Func, Arity, Loop}, _From, S) ->
+    NewExpects = store_expect(S#state.mod, Func, {loop, Arity, Loop, Loop},
                               S#state.expects),
     {reply, ok, S#state{expects = NewExpects}};
 handle_call({delete, Func, Arity}, _From, S) ->
@@ -323,7 +381,21 @@ init_expects(Mod, Options) ->
 
 
 get_expect(Expects, Func, Arity) ->
-    e_fetch(Expects, Func, Arity).
+    case e_fetch(Expects, Func, Arity) of
+        {sequence, Arity, [Result]} ->
+            {{sequence, Arity, Result}, Expects};
+        {sequence, Arity, [Result|Rest]} ->
+            {{sequence, Arity, Result},
+             e_store(Expects, Func, {sequence, Arity, Rest})};
+        {loop, Arity, [Result], Loop} ->
+            {{loop, Arity, Result},
+             e_store(Expects, Func, {loop, Arity, Loop, Loop})};
+        {loop, Arity, [Result|Rest], Loop} ->
+            {{loop, Arity, Result},
+             e_store(Expects, Func, {loop, Arity, Rest, Loop})};
+        Other ->
+            {Other, Expects}
+    end.
 
 store_expect(Mod, Func, Expect, Expects) ->
     change_expects(fun e_store/3, Mod, Func, Expect, Expects).
@@ -383,6 +455,10 @@ var_name(A) -> list_to_atom("A"++integer_to_list(A)).
 
 arity({anon, Arity, _Result}) ->
     Arity;
+arity({sequence, Arity, _Sequence}) ->
+    Arity;
+arity({loop, Arity, _Current, _Loop}) ->
+    Arity;
 arity(Fun) when is_function(Fun) ->
     {arity, Arity} = erlang:fun_info(Fun, arity),
     Arity.
@@ -426,7 +502,7 @@ mock_exception_fun(Class, Reason) -> fun() -> {exception, Class, Reason} end.
 
 passthrough_fun(Args) -> fun() -> {passthrough, Args} end.
 
-call_expect(_Mod, _Func, {anon, Arity, Return}, VarList)
+call_expect(_Mod, _Func, {_Type, Arity, Return}, VarList)
   when Arity == length(VarList) ->
     Return;
 call_expect(Mod, Func, passthrough, VarList) ->
@@ -442,4 +518,3 @@ inject(Mod, Func, Args, [H|Stack]) ->
     [H|inject(Mod, Func, Args, Stack)].
 
 is_mock_exception(Fun) -> is_local_function(Fun).
-
