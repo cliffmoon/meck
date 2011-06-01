@@ -1,6 +1,6 @@
 %%%-------------------------------------------------------------------
 %%% File:      meck_interceptor.erl
-%%% @author    cliff moon <cliff@fastip.com> []
+%%% @author    cliff moon <cliff@boundary.com> []
 %%% @copyright 2011 cliff moon
 %%% @doc  
 %%%
@@ -9,7 +9,7 @@
 %%% @since 2011-03-04 by cliff moon
 %%%-------------------------------------------------------------------
 -module(meck_interceptor).
--author('cliff@fastip.com').
+-author('cliff@boundary.com').
 
 %% API
 -export([new/2]).
