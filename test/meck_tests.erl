@@ -55,7 +55,23 @@ meck_test_() ->
                            fun shortcut_expect_negative_arity_/1,
                            fun shortcut_call_return_value_/1,
                            fun shortcut_call_argument_/1,
-                           fun delete_/1]]}.
+                           fun shortcut_re_add_/1,
+                           fun shortcut_opaque_/1,
+                           fun delete_/1,
+                           fun called_false_no_args_/1,
+                           fun called_true_no_args_/1,
+                           fun called_true_two_functions_/1,
+                           fun called_false_one_arg_/1,
+                           fun called_true_one_arg_/1,
+                           fun called_false_few_args_/1,
+                           fun called_true_few_args_/1,
+                           fun called_false_error_/1,
+                           fun called_true_error_/1,
+                           fun sequence_/1,
+                           fun sequence_multi_/1,
+                           fun loop_/1,
+                           fun loop_multi_/1
+                          ]]}.
 
 setup() ->
     % Uncomment to run tests with dbg:
@@ -178,12 +194,8 @@ caller_does_not_crash_on_reload_(Mod) ->
 change_func_(Mod) ->
     ok = meck:expect(Mod, test, fun() -> 1 end),
     ?assertEqual(1, Mod:test()),
-    MTime = proplists:get_value(time, Mod:module_info(compile)),
-    % recompile will result in increased module_info time
-    timer:sleep(1100),
     ok = meck:expect(Mod, test, fun() -> 2 end),
-    ?assertEqual(2, Mod:test()),
-    ?assertEqual(MTime, proplists:get_value(time, Mod:module_info(compile))).
+    ?assertEqual(2, Mod:test()).
 
 call_original_undef_(Mod) ->
     ok = meck:expect(Mod, test, fun() -> meck:passthrough([]) end),
@@ -195,10 +207,13 @@ history_empty_(Mod) ->
 history_call_(Mod) ->
     ok = meck:expect(Mod, test, fun() -> ok end),
     ok = meck:expect(Mod, test2, fun(_, _) -> result end),
+    ok = meck:expect(Mod, test3, 0, 3),
     Mod:test(),
     Mod:test2(a, b),
-    ?assertEqual([{{Mod, test, []}, ok},
-                  {{Mod, test2, [a, b]}, result}], meck:history(Mod)).
+    Mod:test3(),
+    ?assertEqual([{{Mod, test,  []},     ok},
+                  {{Mod, test2, [a, b]}, result},
+                  {{Mod, test3, []},     3}], meck:history(Mod)).
 
 history_throw_(Mod) ->
     ok = meck:expect(Mod, test, fun() -> throw(test_exception) end),
@@ -273,9 +288,20 @@ shortcut_call_return_value_(Mod) ->
     ?assertEqual(true, meck:validate(Mod)).
 
 shortcut_call_argument_(Mod) ->
-    ok = meck:expect(Mod, test, fun(hest, 1) -> apa end),
+    ok = meck:expect(Mod, test, 2, apa),
     ?assertEqual(apa, Mod:test(hest, 1)),
     ?assertEqual(true, meck:validate(Mod)).
+
+shortcut_re_add_(Mod) ->
+    ok = meck:expect(Mod, test, 2, apa),
+    ?assertEqual(apa, Mod:test(hest, 1)),
+    ok = meck:expect(Mod, test, 2, new),
+    ?assertEqual(new, Mod:test(hest, 1)),
+    ?assertEqual(true, meck:validate(Mod)).
+
+shortcut_opaque_(Mod) ->
+    ok = meck:expect(Mod, test, 0, {test, [a, self()]}),
+    ?assertMatch({test, [a, P]} when P == self(), Mod:test()).
 
 delete_(Mod) ->
     ok = meck:expect(Mod, test, 2, ok),
@@ -283,9 +309,103 @@ delete_(Mod) ->
     ?assertError(undef, Mod:test(a, b)),
     ?assert(meck:validate(Mod)).
 
+called_false_no_args_(Mod) ->
+    Args = [],
+    ok = meck:expect(Mod, test, length(Args), ok),
+    assert_called(Mod, test, Args, false).
+
+called_true_no_args_(Mod) ->
+    Args = [],
+    ok = meck:expect(Mod, test, length(Args), ok),
+    ok = apply(Mod, test, Args),
+    assert_called(Mod, test, Args, true).
+
+called_true_two_functions_(Mod) ->
+    Args = [],
+    ok = meck:expect(Mod, test1, length(Args), ok),
+    ok = meck:expect(Mod, test2, length(Args), ok),
+    ok = apply(Mod, test1, Args),
+    ok = apply(Mod, test2, Args),
+    assert_called(Mod, test2, Args, true).
+
+called_false_one_arg_(Mod) ->
+    Args = ["hello"],
+    ok = meck:expect(Mod, test, length(Args), ok),
+    assert_called(Mod, test, Args, false).
+
+called_true_one_arg_(Mod) ->
+    Args = ["hello"],
+    ok = meck:expect(Mod, test, length(Args), ok),
+    ok = apply(Mod, test, Args),
+    assert_called(Mod, test, Args, true).
+
+called_false_few_args_(Mod) ->
+    Args = [one, 2, {three, 3}, "four"],
+    ok = meck:expect(Mod, test, length(Args), ok),
+    assert_called(Mod, test, Args, false).
+
+called_true_few_args_(Mod) ->
+    Args = [one, 2, {three, 3}, "four"],
+    ok = meck:expect(Mod, test, length(Args), ok),
+    ok = apply(Mod, test, Args),
+    assert_called(Mod, test, Args, true).
+
+called_false_error_(Mod) ->
+    Args = [one, "two", {3, 3}],
+    TestFun = fun (_, _, _) -> meck:exception(error, my_error) end,
+    ok = meck:expect(Mod, test, TestFun),
+    assert_called(Mod, test, Args, false).
+
+called_true_error_(Mod) ->
+    Args = [one, "two", {3, 3}],
+    TestFun = fun (_, _, _) -> meck:exception(error, my_error) end,
+    ok = meck:expect(Mod, test, TestFun),
+    catch apply(Mod, test, Args),
+    assert_called(Mod, test, Args, true).
+
+sequence_(Mod) ->
+    Sequence = [a, b, c, d, e],
+    ?assertEqual(ok, meck:sequence(Mod, s, 2, Sequence)),
+    ?assertEqual(Sequence,
+                 [Mod:s(a, b) || _ <- lists:seq(1, length(Sequence))]),
+    ?assertEqual([e, e, e, e, e],
+                 [Mod:s(a, b) || _ <- lists:seq(1, 5)]),
+    ?assert(meck:validate(Mod)).
+
+sequence_multi_(Mod) ->
+    meck:new(mymod2),
+    Mods = [Mod, mymod2],
+    Sequence = [a, b, c, d, e],
+    ?assertEqual(ok, meck:sequence(Mods, s, 2, Sequence)),
+    ?assertEqual(Sequence,
+                 [Mod:s(a, b) || _ <- lists:seq(1, length(Sequence))]),
+    ?assertEqual([e, e, e, e, e],
+                 [Mod:s(a, b) || _ <- lists:seq(1, 5)]),
+    ?assertEqual(Sequence,
+                 [mymod2:s(a, b) || _ <- lists:seq(1, length(Sequence))]),
+    ?assertEqual([e, e, e, e, e],
+                 [mymod2:s(a, b) || _ <- lists:seq(1, 5)]),
+    ?assert(meck:validate(Mods)).
+
+loop_(Mod) ->
+    Loop = [a, b, c, d, e],
+    ?assertEqual(ok, meck:loop(Mod, l, 2, Loop)),
+    [?assertEqual(V, Mod:l(a, b)) || _ <- lists:seq(1, length(Loop)), V <- Loop],
+    ?assert(meck:validate(Mod)).
+
+loop_multi_(Mod) ->
+    meck:new(mymod2),
+    Mods = [Mod, mymod2],
+    Loop = [a, b, c, d, e],
+    ?assertEqual(ok, meck:loop(Mods, l, 2, Loop)),
+    [[?assertEqual(V, M:l(a, b)) || _ <- lists:seq(1, length(Loop)), V <- Loop]
+     || M <- Mods],
+    ?assert(meck:validate(Mods)).
+
 %% --- Tests with own setup ----------------------------------------------------
 
 call_original_test() ->
+    false = code:purge(meck_test_module),
     ?assertEqual({module, meck_test_module}, code:load_file(meck_test_module)),
     ok = meck:new(meck_test_module),
     ?assertEqual({file, ""}, code:is_loaded(meck_test_module_meck_original)),
@@ -334,83 +454,76 @@ passthrough_test() ->
     ?assertEqual({1, 2}, meck_test_module:c(1, 2)),
     ok = meck:unload(meck_test_module).
 
+passthrough_different_arg_test() ->
+    ok = meck:new(meck_test_module),
+    ok = meck:expect(meck_test_module, c,
+                     fun(_, _) -> meck:passthrough([x, y]) end),
+    ?assertEqual({x, y}, meck_test_module:c(1, 2)),
+    ok = meck:unload(meck_test_module).
+
+passthrough_bif_test() ->
+    ?assertEqual(ok, meck:new(file, [unstick, passthrough])),
+    ?assertEqual(ok, meck:unload(file)).
+
 cover_test() ->
     {ok, _} = cover:compile("../test/meck_test_module.erl"),
     a = meck_test_module:a(),
     b = meck_test_module:b(),
     {1, 2} = meck_test_module:c(1, 2),
     {ok, {meck_test_module, {3,0}}} = cover:analyze(meck_test_module, module),
-
-    ok = meck:new(meck_test_module),
-    ok = meck:expect(meck_test_module, a, fun() -> c end),
-    ?assertEqual(c, meck_test_module:a()),
-
-    ok = meck:unload(meck_test_module),
-
-    ?assert(not filelib:is_file("meck_test_module.coverdata")),
-
+    run_mock_no_cover_file(meck_test_module),
     {ok, {meck_test_module, {3,0}}} = cover:analyze(meck_test_module, module).
 
 cover_options_test_() ->
+    {foreach, fun compile_options_setup/0, fun compile_options_teardown/1,
+     [{with, [T]} || T <- [fun ?MODULE:cover_options_/1]]}.
+
+compile_options_setup() ->
+    Module = cover_test_module,
+    % Our test module won't compile without compiler options that
+    % rebar won't give it, thus the rename dance.
+    Src = join("../test/", Module, ".erl"),
+    ok = file:rename(join("../test/", Module, ".dontcompile"), Src),
+    OldPath = code:get_path(),
+    code:add_path("../test"),
+    {OldPath, Src, Module}.
+
+compile_options_teardown({OldPath, Src, Module}) ->
+    file:rename(Src, join("../test/", Module, ".dontcompile")),
+    code:set_path(OldPath).
+
+cover_options_({_OldPath, Src, Module}) ->
     % Test that compilation options (include paths and preprocessor
     % definitions) are used when un-mecking previously cover compiled
-    % modules.  Our test module won't compile without compiler options
-    % that rebar won't give it, thus the rename dance.
-    {setup,
-     fun() ->
-             ok = file:rename("../test/cover_test_module.dontcompile",
-                              "../test/cover_test_module.erl"),
-             OldPath = code:get_path(),
-             code:add_path("../test"),
-             OldPath
-     end,
-     fun(OldPath) ->
-             file:rename("../test/cover_test_module.erl",
-                         "../test/cover_test_module.dontcompile"),
-             code:set_path(OldPath)
-     end,
-     ?_test(
-        begin
-            CompilerOptions = [{i, "../test/include"},
-                               {d, 'TEST', true}],
-            % The option recover feature depends on having the BEAM
-            % file available.
-            {ok, _} = compile:file("../test/cover_test_module.erl",
-                                   [{outdir, "../test"}|CompilerOptions]),
-            {ok, _} = cover:compile("../test/cover_test_module.erl",
-                                    CompilerOptions),
-            a = cover_test_module:a(),
-            b = cover_test_module:b(),
-            {1, 2} = cover_test_module:c(1, 2),
-            % We get 2 instead of 3 as expected.  Maybe because cover
-            % doesn't count include files?
-            ?assertEqual({ok, {cover_test_module, {2,0}}},
-                         cover:analyze(cover_test_module, module)),
+    % modules.
+    CompilerOptions = [{i, "../test/include"}, {d, 'TEST', true}],
+    % The option recover feature depends on having the BEAM file
+    % available.
+    {ok, _} = compile:file(Src, [{outdir, "../test"}|CompilerOptions]),
+    {ok, _} = cover:compile(Src, CompilerOptions),
+    a      = Module:a(),
+    b      = Module:b(),
+    {1, 2} = Module:c(1, 2),
+    % We get 2 instead of 3 as expected.  Maybe because cover doesn't
+    % count include files?
+    ?assertEqual({ok, {Module, {2,0}}}, cover:analyze(Module, module)),
+    run_mock_no_cover_file(Module),
+    % 2 instead of 3, as above
+    ?assertEqual({ok, {Module, {2,0}}}, cover:analyze(Module, module)).
 
-            ok = meck:new(cover_test_module),
-            ok = meck:expect(cover_test_module, a, fun() -> c end),
-            ?assertEqual(c, cover_test_module:a()),
+join(Path, Module, Ext) -> filename:join(Path, atom_to_list(Module) ++ Ext).
 
-            ok = meck:unload(cover_test_module),
-
-            ?assert(not filelib:is_file("cover_test_module.coverdata")),
-
-            % 2 instead of 3, as above
-            ?assertEqual({ok, {cover_test_module, {2,0}}},
-                         cover:analyze(cover_test_module, module))
-        end)}.
+run_mock_no_cover_file(Module) ->
+    ok = meck:new(Module),
+    ok = meck:expect(Module, a, fun () -> c end),
+    ?assertEqual(c, Module:a()),
+    ok = meck:unload(Module),
+    ?assert(not filelib:is_file(atom_to_list(Module) ++ ".coverdata")).
 
 cover_passthrough_test() ->
     {ok, _} = cover:compile("../test/meck_test_module.erl"),
     {ok, {meck_test_module, {0,3}}} = cover:analyze(meck_test_module, module),
-
-    ok = meck:new(meck_test_module, [passthrough]),
-    ok = meck:expect(meck_test_module, a, fun() -> c end),
-    ?assertEqual(c, meck_test_module:a()),
-    ?assertEqual(b, meck_test_module:b()),
-    ?assertEqual({1, 2}, meck_test_module:c(1, 2)),
-
-    ok = meck:unload(meck_test_module),
+    passthrough_test(),
     {ok, {meck_test_module, {0,3}}} = cover:analyze(meck_test_module, module).
 
 % @doc The mocked module is unloaded if the meck process crashes.
@@ -434,7 +547,7 @@ unlink_test() ->
     ?assert(not lists:member(self(), Links)),
     ok = meck:unload(mymod).
 
-%% @doc Exception is thrown when you run expect on a non-existing module.
+%% @doc Exception is thrown when you run expect on a non-existing (and not yet mocked) module.
 expect_without_new_test() ->
     ?assertError({not_mocked, othermod},
                  meck:expect(othermod, test, fun() -> ok end)).
@@ -530,3 +643,78 @@ remote_meck_cover_({Node, Mod}) ->
     {ok, _Nodes} = cover:start([Node]),
     ?assertEqual(ok, rpc:call(Node, meck, new, [Mod])).
 
+can_mock_sticky_modules_test() ->
+    code:stick_mod(meck_test_module),
+    meck:new(meck_test_module, [unstick]),
+    ?assertNot(code:is_sticky(meck_test_module)),
+    meck:unload(meck_test_module),
+    ?assert(code:is_sticky(meck_test_module)),
+    code:unstick_mod(meck_test_module).
+
+
+sticky_directory_test_() ->
+    {foreach, fun sticky_setup/0, fun sticky_teardown/1,
+     [{with, [T]}
+      || T <- [fun ?MODULE:can_mock_sticky_module_not_yet_loaded_/1,
+               fun ?MODULE:cannot_mock_sticky_module_without_unstick_/1]]}.
+
+sticky_setup() ->
+    % Find out where the beam file is (purge because it is cover compiled)
+    Module = meck_test_module,
+    false = code:purge(Module),
+    {module, Module} = code:load_file(Module),
+    Beam = code:which(Module),
+
+    % Unload module so it's not loaded when running meck
+    false = code:purge(Module),
+    true = code:delete(Module),
+
+    % Create new sticky dir and copy beam file
+    Dir = "sticky_test",
+    ok = filelib:ensure_dir(filename:join(Dir, "dummy")),
+    Dest = filename:join(Dir, filename:basename(Beam)),
+    {ok, _BytesCopied} = file:copy(Beam, Dest),
+    true = code:add_patha(Dir),
+    ok = code:stick_dir(Dir),
+
+    {Module, {Dir, Dest}}.
+
+sticky_teardown({Module, {Dir, Dest}}) ->
+    % Clean up
+    ok = code:unstick_dir(Dir),
+    false = code:purge(Module),
+    true = code:del_path(Dir),
+    ok = file:delete(Dest),
+    ok = file:del_dir(Dir).
+
+can_mock_sticky_module_not_yet_loaded_({Mod, _}) ->
+    ?assertEqual(ok, meck:new(Mod, [unstick])),
+    ?assertNot(code:is_sticky(Mod)),
+    ?assertEqual(ok, meck:unload(Mod)),
+    ?assert(code:is_sticky(Mod)).
+
+cannot_mock_sticky_module_without_unstick_({Mod, _}) ->
+    ?assertError(module_is_sticky, meck:new(Mod, [no_link])).
+
+can_mock_non_sticky_module_test() ->
+    ?assertNot(code:is_sticky(meck_test_module)),
+    ?assertEqual(ok, meck:new(meck_test_module, [unstick])),
+    ?assertNot(code:is_sticky(meck_test_module)),
+    ?assertEqual(ok, meck:unload(meck_test_module)),
+    ?assertNot(code:is_sticky(meck_test_module)).
+
+cannot_expect_bif_or_autogenerated_test() ->
+    ?assertEqual(ok, meck:new(unicode, [unstick, passthrough])),
+    ?assertError({cannot_mock_builtin, {unicode, characters_to_binary, 2}},
+                 meck:expect(unicode, characters_to_binary, 2, doh)),
+    ?assertError({cannot_mock_autogenerated, {unicode, module_info, 0}},
+                 meck:expect(unicode, module_info, 0, doh)),
+    ?assertEqual(ok, meck:unload(unicode)).
+
+%%==============================================================================
+%% Internal Functions
+%%==============================================================================
+
+assert_called(Mod, Function, Args, WasCalled) ->
+    ?assertEqual(WasCalled, meck:called(Mod, Function, Args)),
+    ?assert(meck:validate(Mod)).
